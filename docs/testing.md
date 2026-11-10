@@ -225,31 +225,18 @@ docker compose exec -T kafka /opt/kafka/bin/kafka-consumer-groups.sh \
 
 ---
 
-## 九、CI 建议
+## 九、CI
 
-最小流水线（示例，不创建文件，按需加入仓库）：
+流水线已落地于 [`.github/workflows/build.yml`](../.github/workflows/build.yml)，在 `main` 分支的 push 与 PR 上触发：
 
-```yaml
-name: build
-on: [push, pull_request]
-jobs:
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: maven
-      - run: mvn -B clean package
-      - name: 归档测试报告
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: surefire-reports
-          path: '**/target/surefire-reports/*.txt'
-```
+| 步骤 | 内容 |
+| :--- | :--- |
+| 检出 / JDK | `actions/checkout@v4`、`actions/setup-java@v4`（Temurin 17，Maven 缓存） |
+| 构建与测试 | `mvn -B -ntp clean package`（全部 55 个单元测试） |
+| 制品校验 | 检查三个 Fat Jar 存在且 `META-INF/MANIFEST.MF` 含 `Main-Class` |
+| 报告归档 | `actions/upload-artifact@v4` 上传各模块 `target/surefire-reports/*`（`if: always()`，保留 7 天） |
+
+`permissions: contents: read` 为最小权限；`concurrency` 按 ref 分组并取消同一 ref 上的旧运行，避免排队浪费。CI 使用 JDK 17，与本地验证环境一致（项目以 `maven.compiler.release=11` 编译，JDK 11/17 均可）。
 
 建议补充：
 

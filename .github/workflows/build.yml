@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 构建与单元测试
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Maven 构建与单元测试
+        run: mvn -B -ntp clean package
+
+      - name: 校验 Fat Jar 可执行入口
+        run: |
+          set -euo pipefail
+          for jar in \
+            cdc-ingestion/target/cdc-ingestion-1.0.0-SNAPSHOT.jar \
+            stream-etl/target/stream-etl-1.0.0-SNAPSHOT.jar \
+            infra-sim/target/infra-sim-1.0.0-SNAPSHOT.jar; do
+            test -f "$jar"
+            main_class=$(unzip -p "$jar" META-INF/MANIFEST.MF | grep 'Main-Class:' | tr -d '\r')
+            test -n "$main_class"
+            echo "OK $jar -> $main_class"
+          done
+
+      - name: 归档测试报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: '**/target/surefire-reports/*'
+          if-no-files-found: warn
+          retention-days: 7
