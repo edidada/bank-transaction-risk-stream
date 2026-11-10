@@ -1,0 +1,57 @@
+# 一次性作业提交任务。镜像需先构建并导入 k3s containerd（见部署文档）。
+# 重新提交前请先 cancel 已有作业，避免重复消费。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: submit-flink-jobs
+  namespace: bank-risk
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: submit
+          image: bank-risk-job-runner:1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              set -e
+              FLINK=/opt/flink/bin/flink
+              JM=flink-jobmanager.bank-risk.svc.cluster.local:8081
+              echo '等待 JobManager 就绪...'
+              until "$FLINK" list -m "$JM" >/dev/null 2>&1; do sleep 5; done
+
+              echo '>>> 提交 cdc-ingestion'
+              "$FLINK" run -d -m "$JM" /opt/flink/jobs/cdc-ingestion-1.0.0-SNAPSHOT.jar \
+                --mysql-host mysql.bank-risk.svc.cluster.local \
+                --mysql-port 3306 \
+                --mysql-user cdc \
+                --mysql-password cdc123456 \
+                --mysql-database bank \
+                --mysql-table bank.transaction \
+                --mysql-server-id 5401-5404 \
+                --cdc-startup-mode initial \
+                --kafka-bootstrap kafka.bank-risk.svc.cluster.local:9092 \
+                --kafka-topic bank-cdc-events \
+                --parallelism 1 \
+                --job-name cdc-ingestion
+
+              echo '>>> 提交 stream-etl'
+              "$FLINK" run -d -m "$JM" /opt/flink/jobs/stream-etl-1.0.0-SNAPSHOT.jar \
+                --kafka-bootstrap kafka.bank-risk.svc.cluster.local:9092 \
+                --kafka-topic bank-cdc-events \
+                --dlq-topic bank-cdc-dlq \
+                --kafka-startup-mode earliest \
+                --doris-fe-host doris-fe.bank-risk.svc.cluster.local \
+                --doris-http-port 8030 \
+                --doris-database risk \
+                --doris-table risk_event_detail \
+                --doris-user root \
+                --doris-password "" \
+                --hudi-base-path file:///data/hudi/bank_transaction_changelog \
+                --parallelism 2 \
+                --job-name stream-etl
+
+              "$FLINK" list -m "$JM"

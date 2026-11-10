@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flink-config
+  namespace: bank-risk
+data:
+  flink-conf.yaml: |
+    jobmanager.rpc.address: flink-jobmanager
+    jobmanager.bind-host: 0.0.0.0
+    taskmanager.bind-host: 0.0.0.0
+    rest.address: 0.0.0.0
+    rest.bind-address: 0.0.0.0
+
+    parallelism.default: 2
+    taskmanager.numberOfTaskSlots: 4
+    taskmanager.memory.process.size: 2048m
+    jobmanager.memory.process.size: 1024m
+
+    execution.checkpointing.interval: 30s
+    execution.checkpointing.mode: EXACTLY_ONCE
+    execution.checkpointing.min-pause: 10s
+    execution.checkpointing.timeout: 5min
+    execution.checkpointing.max-concurrent-checkpoints: 1
+    execution.checkpointing.externalized-checkpoint-retention: RETAIN_ON_CANCELLATION
+
+    state.backend: hashmap
+    state.checkpoints.dir: file:///data/flink/checkpoints
+    state.savepoints.dir: file:///data/flink/savepoints
+
+    restart-strategy: fixed-delay
+    restart-strategy.fixed-delay.attempts: 3
+    restart-strategy.fixed-delay.delay: 10s
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-init-sql
+  namespace: bank-risk
+data:
+  01-schema.sql: |
+    CREATE DATABASE IF NOT EXISTS bank DEFAULT CHARACTER SET utf8mb4;
+    USE bank;
+    CREATE TABLE IF NOT EXISTS `transaction` (
+      transaction_id VARCHAR(64) NOT NULL PRIMARY KEY,
+      user_id VARCHAR(32) NOT NULL,
+      amount DECIMAL(18,2) NOT NULL,
+      currency VARCHAR(8) NOT NULL DEFAULT 'CNY',
+      status VARCHAR(16) NOT NULL DEFAULT 'INIT',
+      channel VARCHAR(16) NOT NULL,
+      merchant_id VARCHAR(32) NOT NULL,
+      city VARCHAR(32) NOT NULL,
+      card_no VARCHAR(32) NOT NULL,
+      event_time BIGINT NOT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_user_event (user_id, event_time)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE TABLE IF NOT EXISTS `user_account` (
+      user_id VARCHAR(32) NOT NULL PRIMARY KEY,
+      user_name VARCHAR(64) NOT NULL,
+      risk_level VARCHAR(16) NOT NULL DEFAULT 'LOW'
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+    CREATE USER IF NOT EXISTS 'cdc'@'%' IDENTIFIED WITH mysql_native_password BY 'cdc123456';
+    GRANT SELECT, RELOAD, SHOW DATABASES, REPLICATION SLAVE, REPLICATION CLIENT, LOCK TABLES ON *.* TO 'cdc'@'%';
+    GRANT ALL PRIVILEGES ON bank.* TO 'cdc'@'%';
+    FLUSH PRIVILEGES;
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: doris-init-sql
+  namespace: bank-risk
+data:
+  01-risk-tables.sql: |
+    CREATE DATABASE IF NOT EXISTS risk;
+    USE risk;
+    CREATE TABLE IF NOT EXISTS risk_event_detail (
+      transaction_id VARCHAR(64) NOT NULL,
+      user_id VARCHAR(32) NOT NULL,
+      event_time BIGINT NOT NULL,
+      processed_at BIGINT NOT NULL,
+      op VARCHAR(8) NOT NULL,
+      amount DECIMAL(18,2) NOT NULL,
+      city VARCHAR(32),
+      merchant_id VARCHAR(32),
+      score INT NOT NULL,
+      level VARCHAR(8) NOT NULL,
+      window_count INT NOT NULL,
+      window_amount DECIMAL(18,2) NOT NULL,
+      reasons VARCHAR(512)
+    )
+    UNIQUE KEY(transaction_id)
+    DISTRIBUTED BY HASH(transaction_id) BUCKETS 8
+    PROPERTIES ("replication_num" = "1", "enable_unique_key_merge_on_write" = "true");
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bank-risk-credentials
+  namespace: bank-risk
+type: Opaque
+stringData:
+  MYSQL_ROOT_PASSWORD: "root"
+  MYSQL_CDC_USER: "cdc"
+  MYSQL_CDC_PASSWORD: "cdc123456"
+  DORIS_USER: "root"
+  DORIS_PASSWORD: ""

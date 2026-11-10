@@ -1,0 +1,35 @@
+# 模拟上游业务库的持续写入。镜像需先构建并导入 k3s containerd（见部署文档）。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-generator
+  namespace: bank-risk
+  labels: { app: data-generator }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: data-generator }
+  template:
+    metadata:
+      labels: { app: data-generator }
+    spec:
+      containers:
+        - name: generator
+          image: bank-risk-data-generator:1.0.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: JDBC_URL
+              value: "jdbc:mysql://mysql.bank-risk.svc.cluster.local:3306/bank?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai"
+            - name: MYSQL_USER
+              value: "root"
+            - name: MYSQL_PASSWORD
+              valueFrom: { secretKeyRef: { name: bank-risk-credentials, key: MYSQL_ROOT_PASSWORD } }
+            - name: TPS
+              value: "20"
+            - name: DURATION_SECONDS
+              value: "0"
+            - name: SEED
+              value: "20261110"
+          resources:
+            requests: { cpu: "200m", memory: "512Mi" }
+            limits: { cpu: "1", memory: "1Gi" }

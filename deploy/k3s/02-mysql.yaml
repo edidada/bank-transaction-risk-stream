@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-data
+  namespace: bank-risk
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: bank-risk
+  labels: { app: mysql }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: { app: mysql }
+  template:
+    metadata:
+      labels: { app: mysql }
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0.39
+          args:
+            - --server-id=1
+            - --log-bin=mysql-bin
+            - --binlog_format=ROW
+            - --binlog_row_image=FULL
+            - --gtid_mode=ON
+            - --enforce_gtid_consistency=ON
+            - --default-authentication-plugin=mysql_native_password
+            - --character-set-server=utf8mb4
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom: { secretKeyRef: { name: bank-risk-credentials, key: MYSQL_ROOT_PASSWORD } }
+            - name: MYSQL_DATABASE
+              value: bank
+          ports:
+            - { name: mysql, containerPort: 3306 }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/mysql }
+            - { name: init-sql, mountPath: /docker-entrypoint-initdb.d, readOnly: true }
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h localhost -uroot -p$MYSQL_ROOT_PASSWORD"]
+            initialDelaySeconds: 20
+            periodSeconds: 5
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits: { cpu: "2", memory: "4Gi" }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: mysql-data }
+        - name: init-sql
+          configMap: { name: mysql-init-sql }
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: bank-risk
+spec:
+  type: ClusterIP
+  selector: { app: mysql }
+  ports:
+    - { name: mysql, port: 3306, targetPort: 3306 }

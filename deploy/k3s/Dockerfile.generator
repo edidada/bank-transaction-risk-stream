@@ -1,0 +1,9 @@
+# 交易数据生成器运行镜像（infra-sim 的 Fat Jar）
+# 构建上下文为仓库根目录：
+#   docker build -t bank-risk-data-generator:1.0.0 -f deploy/k3s/Dockerfile.generator .
+FROM eclipse-temurin:17-jre
+
+WORKDIR /app
+COPY infra-sim/target/infra-sim-1.0.0-SNAPSHOT.jar /app/generator.jar
+
+ENTRYPOINT ["java", "-jar", "/app/generator.jar"]

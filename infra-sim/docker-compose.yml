@@ -1,0 +1,193 @@
+name: bank-risk-sim
+
+# 本地物理架构模拟：MySQL -> Flink CDC -> Kafka -> Flink ETL -> Doris / Hudi(文件)
+# 用法：cd infra-sim && docker compose up -d
+# 注意：本编排仅用于本地/教学模拟，账号口令均为演示值，禁止用于生产。
+
+services:
+  # ---------------- 1. 数据源层 ----------------
+  mysql:
+    image: mysql:8.0.39
+    container_name: bank-mysql
+    hostname: mysql
+    command:
+      - --server-id=1
+      - --log-bin=mysql-bin
+      - --binlog_format=ROW
+      - --binlog_row_image=FULL
+      - --gtid_mode=ON
+      - --enforce_gtid_consistency=ON
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: bank
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./sql/mysql:/docker-entrypoint-initdb.d:ro
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks: [bank-net]
+
+  # ---------------- 2. 缓冲与解耦层 ----------------
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: bank-kafka
+    hostname: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+    ports:
+      - "9092:9092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+      - ./kafka/init-topics.sh:/opt/kafka/init-topics.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+    networks: [bank-net]
+
+  kafka-init:
+    image: apache/kafka:3.8.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/opt/kafka/init-topics.sh"]
+    volumes:
+      - ./kafka/init-topics.sh:/opt/kafka/init-topics.sh:ro
+    networks: [bank-net]
+    restart: "no"
+
+  # ---------------- 3. 计算层 ----------------
+  flink-jobmanager:
+    image: flink:1.20.1-scala_2.12-java11
+    container_name: bank-flink-jobmanager
+    hostname: flink-jobmanager
+    command: jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        parallelism.default: 2
+        execution.checkpointing.interval: 30s
+        state.backend: hashmap
+        state.checkpoints.dir: file:///data/flink/checkpoints
+        state.savepoints.dir: file:///data/flink/savepoints
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./jobs:/opt/flink/jobs
+      - ./data/flink:/data/flink
+      - ./data/hudi:/data/hudi
+    networks: [bank-net]
+
+  flink-taskmanager:
+    image: flink:1.20.1-scala_2.12-java11
+    container_name: bank-flink-taskmanager
+    hostname: flink-taskmanager
+    command: taskmanager
+    depends_on:
+      - flink-jobmanager
+    environment:
+      - |
+        FLINK_PROPERTIES=
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        taskmanager.memory.process.size: 2048m
+        parallelism.default: 2
+        state.backend: hashmap
+        state.checkpoints.dir: file:///data/flink/checkpoints
+        state.savepoints.dir: file:///data/flink/savepoints
+    volumes:
+      - ./jobs:/opt/flink/jobs
+      - ./data/flink:/data/flink
+      - ./data/hudi:/data/hudi
+    networks: [bank-net]
+
+  # ---------------- 4. 存储与分析层 ----------------
+  doris-fe:
+    image: apache/doris:fe-2.1.8.1
+    container_name: bank-doris-fe
+    hostname: doris-fe
+    environment:
+      FE_SERVERS: fe1:doris-fe:9010
+      FE_ID: 1
+    ports:
+      - "8030:8030"   # Stream Load / HTTP
+      - "9030:9030"   # MySQL 协议查询
+    volumes:
+      - ./data/doris/fe:/opt/apache-doris/fe/doris-meta
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    networks: [bank-net]
+
+  doris-be:
+    image: apache/doris:be-2.1.8.1
+    container_name: bank-doris-be
+    hostname: doris-be
+    depends_on:
+      - doris-fe
+    environment:
+      FE_SERVERS: fe1:doris-fe:9010
+      BE_ADDR: doris-be:9050
+    ports:
+      - "8040:8040"
+    volumes:
+      - ./data/doris/be:/opt/apache-doris/be/storage
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    # Linux 宿主机需先执行: sudo sysctl -w vm.max_map_count=2000000
+    # Docker Desktop(Windows/macOS) 不支持容器内设置该 sysctl，可保持默认
+    networks: [bank-net]
+
+  doris-init:
+    image: mysql:8.0.39
+    depends_on:
+      - doris-fe
+      - doris-be
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      set -e
+      until mysql -h doris-fe -P 9030 -uroot -e 'SELECT 1' >/dev/null 2>&1; do
+        echo '等待 Doris FE 就绪...'; sleep 5;
+      done
+      mysql -h doris-fe -P 9030 -uroot < /sql/01-risk-tables.sql
+      for i in 1 2 3 4 5 6; do
+        if mysql -h doris-fe -P 9030 -uroot -e "ALTER SYSTEM ADD BACKEND 'doris-be:9050';" 2>/dev/null; then break; fi
+        echo '等待 Doris BE 就绪...'; sleep 10;
+      done
+      echo 'Doris 初始化完成'
+    volumes:
+      - ./sql/doris:/sql:ro
+    networks: [bank-net]
+    restart: "no"
+
+networks:
+  bank-net:
+    driver: bridge
+
+volumes:
+  mysql-data:
+  kafka-data:

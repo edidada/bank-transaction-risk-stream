@@ -34,3 +34,17 @@ build/
 
 ### Mac OS ###
 .DS_Store
+
+### 本项目 ###
+# Maven flatten / shade 产物
+.flattened-pom.xml
+dependency-reduced-pom.xml
+# 本地运行产生的数据与日志
+data/
+logs/
+*.log
+# submit-jobs.sh 复制进 JobManager 挂载目录的 Jar
+infra-sim/jobs/*.jar
+# 本地环境配置（含口令，不入库）
+.env
+application-local.properties

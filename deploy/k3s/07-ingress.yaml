@@ -1,0 +1,29 @@
+# k3s 默认自带 Traefik Ingress Controller。
+# 本地将域名写入 /etc/hosts（或本机 hosts 文件）后即可访问；生产请替换域名并加 TLS。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: bank-risk-ui
+  namespace: bank-risk
+  annotations:
+    kubernetes.io/ingress.class: traefik
+spec:
+  rules:
+    - host: flink.bank-risk.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: flink-jobmanager
+                port: { number: 8081 }
+    - host: doris.bank-risk.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: doris-fe
+                port: { number: 8030 }

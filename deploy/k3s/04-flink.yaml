@@ -1,0 +1,113 @@
+# Flink Session 集群：1 JobManager + 2 TaskManager
+# 说明：checkpoints / hudi 使用 RWO PVC，单节点 k3s 可多 Pod 共享挂载；
+# 多节点集群必须改用 RWX 存储（Longhorn / NFS）或对象存储（s3a://）。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flink-checkpoints
+  namespace: bank-risk
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests: { storage: 10Gi }
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: hudi-data
+  namespace: bank-risk
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests: { storage: 20Gi }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-jobmanager
+  namespace: bank-risk
+  labels: { app: flink, component: jobmanager }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: flink, component: jobmanager }
+  template:
+    metadata:
+      labels: { app: flink, component: jobmanager }
+    spec:
+      containers:
+        - name: jobmanager
+          image: flink:1.20.1-scala_2.12-java11
+          args: ["jobmanager"]
+          env:
+            - name: FLINK_PROPERTIES
+              valueFrom: { configMapKeyRef: { name: flink-config, key: flink-conf.yaml } }
+          ports:
+            - { name: rest, containerPort: 8081 }
+            - { name: rpc, containerPort: 6123 }
+            - { name: blob, containerPort: 6124 }
+          volumeMounts:
+            - { name: checkpoints, mountPath: /data/flink }
+            - { name: hudi, mountPath: /data/hudi }
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits: { cpu: "2", memory: "2Gi" }
+      volumes:
+        - name: checkpoints
+          persistentVolumeClaim: { claimName: flink-checkpoints }
+        - name: hudi
+          persistentVolumeClaim: { claimName: hudi-data }
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flink-taskmanager
+  namespace: bank-risk
+  labels: { app: flink, component: taskmanager }
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: flink, component: taskmanager }
+  template:
+    metadata:
+      labels: { app: flink, component: taskmanager }
+    spec:
+      containers:
+        - name: taskmanager
+          image: flink:1.20.1-scala_2.12-java11
+          args: ["taskmanager"]
+          env:
+            - name: FLINK_PROPERTIES
+              valueFrom: { configMapKeyRef: { name: flink-config, key: flink-conf.yaml } }
+          ports:
+            - { name: rpc, containerPort: 6122 }
+          volumeMounts:
+            - { name: checkpoints, mountPath: /data/flink }
+            - { name: hudi, mountPath: /data/hudi }
+          resources:
+            requests: { cpu: "1", memory: "2Gi" }
+            limits: { cpu: "4", memory: "4Gi" }
+      volumes:
+        - name: checkpoints
+          persistentVolumeClaim: { claimName: flink-checkpoints }
+        - name: hudi
+          persistentVolumeClaim: { claimName: hudi-data }
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: flink-jobmanager
+  namespace: bank-risk
+spec:
+  type: ClusterIP
+  selector: { app: flink, component: jobmanager }
+  ports:
+    - { name: rest, port: 8081, targetPort: 8081 }
+    - { name: rpc, port: 6123, targetPort: 6123 }
+    - { name: blob, port: 6124, targetPort: 6124 }

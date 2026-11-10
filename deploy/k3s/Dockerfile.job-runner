@@ -1,0 +1,9 @@
+# 作业提交镜像：把两个 Fat Jar 打进 Flink 客户端镜像，供 k3s Job 一次性提交使用。
+# 构建上下文为仓库根目录：
+#   docker build -t bank-risk-job-runner:1.0.0 -f deploy/k3s/Dockerfile.job-runner .
+FROM flink:1.20.1-scala_2.12-java11
+
+COPY cdc-ingestion/target/cdc-ingestion-1.0.0-SNAPSHOT.jar /opt/flink/jobs/
+COPY stream-etl/target/stream-etl-1.0.0-SNAPSHOT.jar     /opt/flink/jobs/
+
+WORKDIR /opt/flink
